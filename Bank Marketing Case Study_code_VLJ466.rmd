@@ -1,0 +1,845 @@
+---
+title: "Bank Marketing Case Study"
+author: "Brandi Rodriguez"
+date: "February 2021"
+output:
+  pdf_document: default
+---
+
+#LOAD DATA    
+```{r message=FALSE, warning=FALSE}
+rm(list = ls())
+
+#import libraries
+library(tidyverse)
+library(caret)
+
+#read data
+setwd(getwd())
+raw_data = read.table('bank-additional.csv', sep=";", header=TRUE)
+
+#remove duplicate records
+df1 = distinct(raw_data) 
+
+#rearrange columns
+df1 = raw_data[, c(21, 16:20, 1, 11:14, 2:10, 15)] 
+
+#convert categorical variables to factor variables
+df1$job = as.factor(df1$job)
+df1$marital = as.factor(df1$marital)
+df1$education = as.factor(df1$education)
+df1$default = as.factor(df1$default)
+df1$housing = as.factor(df1$housing)
+df1$loan = as.factor(df1$loan)
+df1$contact = as.factor(df1$contact)
+df1$month = as.factor(df1$month)
+df1$day_of_week = as.factor(df1$day_of_week)
+df1$poutcome = as.factor(df1$poutcome)
+```
+
+#DATA STRUCTURES AND SUMMARY    
+```{r}
+str(df1)
+summary(df1)
+```
+#MISSING VALUES  
+The data appeared to have no missing values, but several variables had a level encoded as "unknown."
+```{r message=FALSE, warning=FALSE}
+library(Amelia)
+missmap(df1, col = c("red", "gray"))
+```
+
+#EXPLORATORY DATA ANALYSIS    
+```{r message=FALSE, warning=FALSE}
+library(DataExplorer)
+introduce(df1)
+```
+
+```{r}
+plot_bar(df1, nrow = 3L, ncol=4L, title = "Bank Marketing Categorical Predictors")
+```
+The majority of clients have not subscribed to a term deposit. A large portion of clients have administrative and blue-collar jobs, are married, and have a university degree. Several of the categorical predictors contain a level labelled "unknown." These will later be treated as NAs. There were slightly more clients who had a home loan, while a large majority did not have a personal loan. More were contacted by cell phone and most of the prior contacts with them took place during summer months. 'Default' does not appear to be a useful feature. It has three levels, yet only 1 'yes'. It's a good candidate for removal.  
+
+```{r}
+plot_bar(df1, by="y", nrow = 3L, ncol=4L, title = "Bank Marketing Categorical Predictors by Y")
+```
+It looks like a larger percent of those last contacted in October, September, March, and December subscribed to a term deposit, while those contacted in the summer months were less likely to subscribe. This is interesting because the summer months were when most of the clients were contacted, while significantly less prior contacts were made in October, September, March and December. Those who were contacted by cell phone rather than telephone, as well as those who had a 'success' as the outcome of the prior marketing campaign were more likely to have subscribed to a term deposit ('poutcome'). The proportion of those who subscribed to a deposit appears to be the same, regardless of day of week ('day_of_week'), whether they had a home loan ('housing'), or personal loan ('loan'). Those contacted by cellular had a larger proportion that subscribed to a term deposit ('contact'). 
+
+```{r}
+plot_histogram(df1, title = "Bank Marketing Numeric Predictors")
+```
+'Age' is centered around age 30 to 40 with a right skewed distribution. 'Campaign' is right skewed as well, with most clients contacted 5 or less times during the current campaign. All values for 'pdays' appear to have taken a value of 0 or '999', with an overwhelming majority as '999'. Because so many were '999', this feature is a candidate for removal from the final data for model training.
+
+#CORRELATION    
+```{r}
+library(corrplot)
+corrplot(cor(df1[, 2:11]), method = "number", type = "upper")
+```
+The socio-economic features are highly correlated.
+   .97: emp.var.rate and euribor3m    
+   .94: euribor3m and nr.employed  
+   .90: emp.var.rate and nr.employed        
+**emp.var.rate**: employment variation rate - quarterly indicator  
+**euribor3m**: euribor 3 month rate - daily indicator  
+**nr.employed**: # of employees
+For now, these features will be kept in the dataset and may potentially be dropped later on in the analysis if they prove to have high VIFs, indicating the presence of multicollinearity. 
+
+#DROP COLUMNS   
+Need to drop 'duration', because it highly affects the response (i.e. if duration = 0, then y = 'no). Plus, our goal is to create a predictive model and 'duration' is not known before a call is performed. 
+```{r}
+df1 = subset(df1, select = -c(duration)) #can add more columns to drop (separate each with a comma)
+```
+
+#DUMMY VARIABLES    
+In logistic regression models, encoding variables as dummy variables allows easy interpretation and calculation of the odds ratios, and increases the stability and significance of the coefficients (https://stats.idre.ucla.edu/wp-content/uploads/2016/02/p046.pdf).
+```{r message=FALSE, warning=FALSE}
+library(fastDummies)
+dummy_create = fastDummies::dummy_cols(df1, remove_first_dummy=TRUE)
+#drop original categorical variables now that they've been encoded as dummy variables
+#keep original response variable "y" as a factor (remove dummy variable "y_yes" created)
+df2 = subset(dummy_create, select=-c(job, marital, education, default, housing, loan, contact, month, day_of_week, poutcome, y_yes))
+```
+
+#SPLIT TRAIN AND TEST DATASETS    
+Since there were so few observations where y = "yes", I'm going to do a 80/20 split (as opposed to a 70/30 split) to capture more observations with y = "yes" to train the model on. 
+```{r message=FALSE, warning=FALSE}
+#without dummy variables
+set.seed(2021)
+index = createDataPartition(df1$y, p=0.8, list = FALSE)
+train1 = df1[index,]
+test1 = df1[-index,]
+
+#with dummy variables
+set.seed(2021)
+index = createDataPartition(df2$y, p=0.8, list = FALSE)
+train2 = df2[index,]
+test2 = df2[-index,]
+```
+
+#Q1: IS IT NECESSARY TO CREATE DUMMY VARIABLES?  
+```{r}
+m1=glm(y~., data=train1, family = binomial)
+m2=glm(y~., data=train2, family = binomial)
+```
+
+Evaluate m1:  
+```{r message=FALSE, warning=FALSE}
+#Which predictors are signifcant and calculate model fit statistics
+significant_if = summary(m1)$coeff[-1,4]<.05
+m1.significant = names(significant_if)[significant_if ==TRUE]
+
+m1.significant
+AIC = AIC(m1)
+BIC = BIC(m1)
+cbind(AIC, BIC)
+
+#make m1 predictions
+library(caret)
+test1$PredProb = predict.glm(m1, newdata=test1, type = 'response')
+test1$Pred.y = ifelse(test1$PredProb >= .5,1,0)
+test1$Pred.y = ifelse(test1$Pred.y == 1, "yes", "no")
+caret::confusionMatrix(as.factor(test1$y), as.factor(test1$Pred.y))
+
+#calculate auc
+library(ROCR)
+library(pROC)
+library(car)
+pred1 = prediction(predict(m1, test1, type = "response"), test1$y)
+auc1 = round(as.numeric(performance(pred1, measure = "auc")@y.values), 3)
+auc1
+```
+
+Evaluate m2:  
+```{r message=FALSE, warning=FALSE}
+#significant predictors and some model fit statistics
+significant_if = summary(m2)$coeff[-1,4]<.05
+m2.significant = names(significant_if)[significant_if ==TRUE]
+
+m2.significant
+AIC = AIC(m2)
+BIC = BIC(m2)
+cbind(AIC, BIC)
+
+#make predictions
+library(caret)
+test2$PredProb = predict.glm(m2, newdata=test2, type = 'response')
+test2$Pred.y = ifelse(test2$PredProb >= .5,1,0)
+test2$Pred.y = ifelse(test2$Pred.y == 1, "yes", "no")
+caret::confusionMatrix(as.factor(test2$y), as.factor(test2$Pred.y))
+
+#calculate AUC
+pred2 = prediction(predict(m2, test2, type = "response"), test2$y)
+auc2 = round(as.numeric(performance(pred2, measure = "auc")@y.values), 3)
+auc2
+```
+
+#Q2. DOES BINNING IMPROVE PREDICTIVENESS?  
+Having a smaller number of age groups that are far more statistically significant than each year evaluated separately (*https://stats.idre.ucla.edu/wp-content/uploads/2016/02/p046.pdf).  
+```{r}
+plot_histogram(df1$age)
+```
+
+Create bins of approximately equal width:  
+https://subscription.packtpub.com/book/big_data_and_business_intelligence/9781783989065/1/ch01lvl1sec20/binning-numerical-data
+```{r message=FALSE, warning=FALSE}
+df3 = df1 #switch to another df for an alternative model
+b = c(-Inf, 30, 45, Inf) #create breaks to infer bins
+df3$age = cut(df3$age, breaks = b)
+summary(df3$age) 
+levels(df3$age) = c("<35", "35-50", "50+")
+summary(df3$age)
+
+#alternative way to bin:
+   #df3$age = cut(df3$age, breaks = 4, labels = c("AgeGroup1", "AgeGroup2", "AgeGroup3", "AgeGroup4"))
+   #summary(df3$age) #doesn't tell you what ages are in each age group, just a count
+```
+
+```{r message=FALSE, warning=FALSE}
+#create test and training dataset
+set.seed(2021)
+index = createDataPartition(df3$y, p=0.8, list = FALSE)
+train3 = df3[index,]
+test3 = df3[-index,]
+
+#train model
+m3=glm(y~., data=train3, family = binomial)
+
+#significant predictors and some model fit statistics
+significant_if = summary(m3)$coeff[-1,4]<.05
+m3.significant = names(significant_if)[significant_if ==TRUE]
+
+m3.significant
+AIC = AIC(m3)
+BIC = BIC(m3)
+cbind(AIC, BIC)
+
+#make predictions and evaluate performance metrics
+library(caret)
+test3$PredProb = predict.glm(m3, newdata=test3, type = 'response')
+test3$Pred.y = ifelse(test3$PredProb >= .5,1,0)
+test3$Pred.y = ifelse(test3$Pred.y == 1, "yes", "no")
+caret::confusionMatrix(as.factor(test3$y), as.factor(test3$Pred.y))
+
+#calculate AUC
+pred3 = prediction(predict(m3, test3, type = "response"), test3$y)
+auc3 = round(as.numeric(performance(pred3, measure = "auc")@y.values), 3)
+auc3
+```
+
+#Q3. DOES REMOVING UNKNOWN VARIABLES IMPROVE MODEL RESULT?  
+```{r}
+colSums(df1 == "unknown")
+```
+
+% of Unknowns by Column  
+```{r}
+df1 %>%
+  summarise_all(list(~mean(. == "unknown"))) %>%
+  gather(key = "variable", value = "Unknown_Percent") %>%
+  arrange(-Unknown_Percent) %>%
+  head(10)
+```
+About a fifth of all values for default were unknown.   
+
+Create a new dataset with unknowns removed.  
+```{r message=FALSE, warning=FALSE}
+df4 = df1 #switch to another df for an alternative model
+df4[df4 == "unknown"] <- NA #convert unknowns to NA
+df4 = drop_na(df4) #remove NAs
+```
+
+Check the data structures after converting to NAs. The new data frame still has the same number of levels as before, despite removing all unknowns.  
+```{r}
+str(df4)
+```
+
+Since the categorical columns originally had "unknown" as a string, R recognizes the NAs as strings. We need to correct this assumption by telling R that it's a column of integers, then convert to factor variables.   (https://www.youtube.com/watch?v=C4N3_XJJ-jU @ 3:00).
+```{r message=FALSE, warning=FALSE}
+df4$default = as.integer(df4$default)
+df4$default = as.factor(df4$default)
+df4$education = as.integer(df4$education)
+df4$education = as.factor(df4$education)
+df4$housing = as.integer(df4$housing)
+df4$housing = as.factor(df4$housing)
+df4$loan = as.integer(df4$loan)
+df4$loan = as.factor(df4$loan)
+df4$job = as.integer(df4$job)
+df4$job = as.factor(df4$job)
+df4$marital = as.integer(df4$marital)
+df4$marital = as.factor(df4$marital)
+str(df4)
+```
+
+Now the # of levels in the categorical variables is 1 less than what it was before. However, the labels for categorical variables that had NAs removed are now replaced with numeric labels.   
+```{r}
+table(df1$default)
+table(df4$default)
+```
+
+Relabel the levels  
+```{r message=FALSE, warning=FALSE}
+levels(df4$default) = c("no", "yes")
+levels(df4$education) = c("basic.4y","basic.6y", "basic.9y","high.school", "illiterate", "professional.course", "university.degree" )
+levels(df4$housing) = c("no", "yes")
+levels(df4$loan) = c("no", "yes")
+levels(df4$job) = c("admin", "blue-collar", "entrepreneur", "housemaid", "management", "retired", "self-employed", "services", "student", "technician", "unemployed")
+levels(df4$marital) = c("divorced", "married", "single")
+```
+
+Double check 
+```{r}
+table(df1$marital)
+table(df4$marital)
+```
+
+```{r message=FALSE, warning=FALSE}
+#create test and training dataset
+set.seed(2021)
+index = createDataPartition(df4$y, p=0.8, list = FALSE)
+train4 = df4[index,]
+test4 = df4[-index,]
+
+#train model
+m4=glm(y~., data=train4, family = binomial)
+
+#significant predictors and some model fit statistics
+significant_if = summary(m4)$coeff[-1,4]<.05
+m4.significant = names(significant_if)[significant_if ==TRUE]
+
+m4.significant
+AIC = AIC(m4)
+BIC = BIC(m4)
+cbind(AIC, BIC)
+
+#make predictions and evaluate performance metrics
+library(caret)
+test4$PredProb = predict.glm(m4, newdata=test4, type = 'response')
+test4$Pred.y = ifelse(test4$PredProb >= .5,1,0)
+test4$Pred.y = ifelse(test4$Pred.y == 1, "yes", "no")
+caret::confusionMatrix(as.factor(test4$y), as.factor(test4$Pred.y))
+
+#calculate AUC
+pred4 = prediction(predict(m4, test4, type = "response"), test4$y)
+auc4 = round(as.numeric(performance(pred4, measure = "auc")@y.values), 3)
+auc4
+```
+
+#Q4: DOES DROPPING PDAYS AND DEFAULT HELP THE MODEL?  
+Taking a closer look at pdays and default, the vast majority of values observed for pdays was 999 values. This column is a candidate for removal, as well as default, which had 3 levels, "no", "unknown" and "yes", but only one observed "yes."
+
+```{r}
+df5 = df3 #switch to another df for an alternative model
+table(df5$pdays)
+table(df5$default)
+```
+
+```{r message=FALSE, warning=FALSE}
+#drop columns
+df5 = subset(df5, select = -c(pdays, default)) 
+
+#create test and training dataset
+set.seed(2021)
+index = createDataPartition(df5$y, p=0.8, list = FALSE)
+train5 = df5[index,]
+test5 = df5[-index,]
+
+#train model
+m5=glm(y~., data=train5, family = binomial)
+
+#significant predictors and some model fit statistics
+significant_if = summary(m5)$coeff[-1,4]<.05
+m5.significant = names(significant_if)[significant_if ==TRUE]
+
+m5.significant
+AIC = AIC(m5)
+BIC = BIC(m5)
+cbind(AIC, BIC)
+
+#make predictions and evaluate performance metrics
+library(caret)
+test5$PredProb = predict.glm(m5, newdata=test5, type = 'response')
+test5$Pred.y = ifelse(test5$PredProb >= .5,1,0)
+test5$Pred.y = ifelse(test5$Pred.y == 1, "yes", "no")
+caret::confusionMatrix(as.factor(test5$y), as.factor(test5$Pred.y))
+
+pred5 = prediction(predict(m5, test5, type = "response"), test5$y)
+auc5 = round(as.numeric(performance(pred5, measure = "auc")@y.values), 3)
+auc5
+```
+
+#Q5: DOES BINNING AGE, REMOVING UNKNOWN VARIABLES, AND DROPPING COLUMNS IMPROVE THE MODEL?  
+  
+Incorporate binning of age by making a copy of df3, where binning was first tested  
+```{r message=FALSE, warning=FALSE}```{r}
+df6 = df3 #switch to another df for an alternative model
+
+#convert unknowns to NA, then remove
+df6[df6 == "unknown"] <- NA 
+df6 = drop_na(df6) 
+
+#reconvert factor variables
+df6$default = as.integer(df6$default)
+df6$default = as.factor(df6$default)
+df6$education = as.integer(df6$education)
+df6$education = as.factor(df6$education)
+df6$housing = as.integer(df6$housing)
+df6$housing = as.factor(df6$housing)
+df6$loan = as.integer(df6$loan)
+df6$loan = as.factor(df6$loan)
+df6$job = as.integer(df6$job)
+df6$job = as.factor(df6$job)
+df6$marital = as.integer(df6$marital)
+df6$marital = as.factor(df6$marital)
+
+#Relabel the levels
+levels(df6$default) = c("no", "yes")
+levels(df6$education) = c("basic.4y","basic.6y", "basic.9y","high.school", "illiterate", "professional.course", "university.degree" )
+levels(df6$housing) = c("no", "yes")
+levels(df6$loan) = c("no", "yes")
+levels(df6$job) = c("admin", "blue-collar", "entrepreneur", "housemaid", "management", "retired", "self-employed", "services", "student", "technician", "unemployed")
+levels(df6$marital) = c("divorced", "married", "single")
+
+#drop columns
+df6 = subset(df6, select = -c(pdays, default)) 
+
+#create test and training dataset
+set.seed(2021)
+index = createDataPartition(df6$y, p=0.8, list = FALSE)
+train6 = df6[index,]
+test6 = df6[-index,]
+
+#train model
+m6=glm(y~., data=train6, family = binomial)
+
+#significant predictors and some model fit statistics
+significant_if = summary(m6)$coeff[-1,4]<.05
+m6.significant = names(significant_if)[significant_if ==TRUE]
+
+m6.significant
+AIC = AIC(m6)
+BIC = BIC(m6)
+cbind(AIC, BIC)
+
+#make predictions and evaluate performance metrics
+library(caret)
+test6$PredProb = predict.glm(m6, newdata=test6, type = 'response')
+test6$Pred.y = ifelse(test6$PredProb >= .5,1,0)
+test6$Pred.y = ifelse(test6$Pred.y == 1, "yes", "no")
+caret::confusionMatrix(as.factor(test6$y), as.factor(test6$Pred.y))
+
+
+#AUC
+pred6 = prediction(predict(m6, test6, type = "response"), test6$y)
+auc6 = round(as.numeric(performance(pred6, measure = "auc")@y.values), 3)
+auc6
+```
+
+#Q6: DOES IMPUTING OUTLIERS IMPROVE MODEL RESULTS?
+```{r}
+df7 = df3 #switch to another df for an alternative model
+```
+
+```{r}
+str(df7)
+```
+
+
+```{r message=FALSE, warning=FALSE}
+library(dlookr)
+df7 %>%
+  plot_outlier(emp.var.rate) #no apparent outliers
+
+df7 %>%
+  plot_outlier(cons.price.idx) #no apparent outliers
+
+df7 %>%
+  plot_outlier(cons.conf.idx)
+
+df7 %>%
+  plot_outlier(euribor3m)
+
+df7 %>%
+  plot_outlier(nr.employed)
+
+df7 %>%
+  plot_outlier(campaign)
+
+df7 %>%
+  plot_outlier(pdays)
+
+df7 %>%
+  plot_outlier(previous)
+```
+
+The capping method imputes the upper outliers with 95 percentile and imputes the bottom outliers with 5 percentile. 
+```{r message=FALSE, warning=FALSE}
+par(mfrow=c(2,4))
+
+df7$emp.var.rate = imputate_outlier(df7, emp.var.rate , method = "capping")
+plot(df7$emp.var.rate, main="emp.var.rate")
+
+df7$cons.price.idx = imputate_outlier(df7, cons.price.idx , method = "capping")
+plot(df7$cons.price.idx)
+
+df7$cons.conf.idx = imputate_outlier(df7, cons.conf.idx , method = "capping")
+plot(df7$cons.conf.idx)
+
+df7$euribor3m = imputate_outlier(df7, euribor3m , method = "capping")
+plot(df7$euribor3m)
+
+df7$nr.employed = imputate_outlier(df7, nr.employed , method = "capping")
+plot(df7$nr.employed)
+
+df7$pdays = imputate_outlier(df7, campaign , method = "capping")
+plot(df7$pdays)
+```
+
+```{r message=FALSE, warning=FALSE}
+#create test and training dataset
+set.seed(2021)
+index = createDataPartition(df7$y, p=0.8, list = FALSE)
+train7 = df7[index,]
+test7 = df7[-index,]
+
+#train model
+m7=glm(y~., data=train7, family = binomial)
+
+#significant predictors and some model fit statistics
+significant_if = summary(m7)$coeff[-1,4]<.05
+m7.significant = names(significant_if)[significant_if ==TRUE]
+
+m7.significant
+AIC = AIC(m7)
+BIC = BIC(m7)
+cbind(AIC, BIC)
+
+#make predictions and evaluate performance metrics
+library(caret)
+test7$PredProb = predict.glm(m7, newdata=test7, type = 'response')
+test7$Pred.y = ifelse(test7$PredProb >= .5,1,0)
+test7$Pred.y = ifelse(test7$Pred.y == 1, "yes", "no")
+caret::confusionMatrix(as.factor(test7$y), as.factor(test7$Pred.y))
+
+#AUC
+pred7 = prediction(predict(m7, test7, type = "response"), test7$y)
+auc7 = round(as.numeric(performance(pred7, measure = "auc")@y.values), 3)
+auc7
+```
+
+#Q7. DOES FEATURE SCALING IMPROVE MODEL ACCURACY?  
+Using the original scale may put more weight on variables with larger ranges, resulting in disproportionate influence. Feature scaling can be used to bring all values to the same magnitudes to solve this issue. 
+```{r message=FALSE, warning=FALSE}
+df8 = df3 #switch to another df for an alternative model
+#create test and training dataset
+set.seed(2021)
+index = createDataPartition(df8$y, p=0.8, list = FALSE)
+train8 = df8[index,]
+test8 = df8[-index,]
+```
+
+```{r message=FALSE, warning=FALSE}
+#may need to adjust these variables, depending on the model used to create a copy of for df8
+train8 = train8%>%
+  mutate_at(c("emp.var.rate", "cons.price.idx", "cons.conf.idx", "euribor3m", "nr.employed", "campaign","previous"), scale)
+
+test8 = test8%>%
+  mutate_at(c("emp.var.rate", "cons.price.idx", "cons.conf.idx", "euribor3m", "nr.employed", "campaign", "previous"), scale)
+```
+
+```{r message=FALSE, warning=FALSE}
+library(gridExtra)
+dp1 = ggplot(train1, aes(x=emp.var.rate))+
+  geom_density(color = "black", fill = "gray") +geom_vline(aes(xintercept = mean(age)), color = "red", linetype = "dashed", size = 1) + geom_vline(aes(xintercept = median(age)), color = "blue", linetype = 4, size =1)
+dp1
+
+dp2 = ggplot(train8, aes(x=emp.var.rate))+
+  geom_density(color = "black", fill = "gray") +geom_vline(aes(xintercept = mean(emp.var.rate)), color = "red", linetype = "dashed", size = 1) + geom_vline(aes(xintercept = median(emp.var.rate)), color = "blue", linetype = 4, size =1)
+dp2
+
+
+dp3 = ggplot(train1, aes(x=cons.conf.idx))+
+  geom_density(color = "black", fill = "gray") +geom_vline(aes(xintercept = mean(cons.conf.idx)), color = "red", linetype = "dashed", size = 1) + geom_vline(aes(xintercept = median(cons.conf.idx)), color = "blue", linetype = 4, size =1)
+dp3
+
+dp4 = ggplot(train8, aes(x=cons.conf.idx))+
+  geom_density(color = "black", fill = "gray") +geom_vline(aes(xintercept = mean(cons.conf.idx)), color = "red", linetype = "dashed", size = 1) + geom_vline(aes(xintercept = median(cons.conf.idx)), color = "blue", linetype = 4, size =1)
+dp4
+
+dp5 = ggplot(train1, aes(x=cons.price.idx))+
+  geom_density(color = "black", fill = "gray") +geom_vline(aes(xintercept = mean(cons.price.idx)), color = "red", linetype = "dashed", size = 1) + geom_vline(aes(xintercept = median(cons.price.idx)), color = "blue", linetype = 4, size =1)
+dp5
+
+dp6 = ggplot(train8, aes(x=cons.price.idx))+
+  geom_density(color = "black", fill = "gray") +geom_vline(aes(xintercept = mean(cons.price.idx)), color = "red", linetype = "dashed", size = 1) + geom_vline(aes(xintercept = median(cons.price.idx)), color = "blue", linetype = 4, size =1)
+dp6
+
+grid.arrange(dp1, dp2, dp3, dp4, dp5, dp6, ncol=2)
+rm(dp1, dp2, dp3, dp4, dp5, dp6)
+```
+
+Check if variance = 1
+```{r message=FALSE, warning=FALSE}
+sd(train8$campaign)
+sd(train8$previous)
+sd(train8$cons.price.idx)
+sd(train8$euribor3m)
+sd(train8$nr.employed)
+```
+
+```{r message=FALSE, warning=FALSE}
+#train model
+m8=glm(y~., data=train8, family = binomial)
+
+#significant predictors and some model fit statistics
+significant_if = summary(m8)$coeff[-1,4]<.05
+m8.significant = names(significant_if)[significant_if ==TRUE]
+
+m8.significant
+AIC = AIC(m8)
+BIC = BIC(m8)
+cbind(AIC, BIC)
+
+#make predictions and evaluate performance metrics
+library(caret)
+test8$PredProb = predict.glm(m8, newdata=test8, type = 'response')
+test8$Pred.y = ifelse(test8$PredProb >= .5,1,0)
+test8$Pred.y = ifelse(test8$Pred.y == 1, "yes", "no")
+caret::confusionMatrix(as.factor(test8$y), as.factor(test8$Pred.y))
+
+#AUC
+pred8 = prediction(predict(m8, test8, type = "response"), test8$y)
+auc8 = round(as.numeric(performance(pred8, measure = "auc")@y.values), 3)
+auc8
+```
+
+Proceed with model 8, which had the highest AUC.
+
+#FITTED MODEL  
+m8, which removes unknowns and includes feature scaling has outperformed all other variations of the baseline model so far. It will now be fitted with only the significant predictors.  
+```{r message=FALSE, warning=FALSE}
+df9 = df8 #switch to another df for an alternative model
+#create test and training dataset
+set.seed(2021)
+index = createDataPartition(df9$y, p=0.8, list = FALSE)
+train9 = df9[index,]
+test9 = df9[-index,]
+
+#train fitted model
+m9=glm(y~emp.var.rate + age + contact + month + poutcome, data=train9, family = binomial)
+
+#significant predictors and some model fit statistics
+significant_if = summary(m9)$coeff[-1,4]<.05
+m9.significant = names(significant_if)[significant_if ==TRUE]
+
+m9.significant
+AIC = AIC(m9)
+BIC = BIC(m9)
+cbind(AIC, BIC)
+
+#make predictions and evaluate performance metrics
+library(caret)
+test9$PredProb = predict.glm(m9, newdata=test9, type = 'response')
+test9$Pred.y = ifelse(test9$PredProb >= .5,1,0)
+test9$Pred.y = ifelse(test9$Pred.y == 1, "yes", "no")
+caret::confusionMatrix(as.factor(test9$y), as.factor(test9$Pred.y))
+
+#AUC
+pred9 = prediction(predict(m9, test9, type = "response"), test9$y)
+auc9 = round(as.numeric(performance(pred9, measure = "auc")@y.values), 3)
+auc9
+```
+
+```{r message=FALSE, warning=FALSE}
+summary(m9)
+```
+
+#ESTABLISH FINAL LOGISTIC MODEL  
+renaming final logistic model and datasets for easier integration #incase we want to view output of code below for a different model.
+```{r message=FALSE, warning=FALSE}
+logit.final = m9 
+logit.df = df9
+logit.train = train9
+logit.test = test9
+logit.pred = pred9 
+logit.auc = auc9
+```
+
+#Compute odds ratios using the exponential function
+```{r message=FALSE, warning=FALSE}
+OR = exp(logit.final$coefficients)
+round(OR, 3)
+```
+The fitted model tells us there's a negative association between emp.var.rate and those who subscribe. The odds ratio of .644 tells us that holding all other predictors fixed, we expect to see about a 64% decrease in the odds of subscribing to a term deposit for a one unit increase in emp.var.rate. The .678 odds ratio of contactelephone tells us with all else held fixed, we can expect to see about a 67% decrease in subscribing from those contacted by telephone rather than cell phone. We can expect to see the largest increase in the odds of subscribing when a client is contacted in the month of March, followed by December, then September. We can expect to see a substantially large increase in subscriptions when the outcome of the previous marketing campaign was a success.   
+  
+#CHECK ASSUMPTIONS    
+Now that we have established our final logistic model, we need to check the assumptions.  
+  
+#Linearity of x with logit of y (applied to numerical variables only).    
+The plot will show us if there is a linear relationship.  
+```{r message=FALSE, warning=FALSE}
+#predict probability of y
+probabilities <- predict(logit.final, type = "response") 
+predicted.classes <- ifelse(probabilities > 0.5, 1, 0)
+
+#Select only numeric predictors
+mydata = dplyr::select_if(logit.train, is.numeric) 
+predictors <- colnames(mydata)
+
+#bind the logit and tidy the data for plotting
+mydata = mutate(mydata, logit = log(probabilities/(1-probabilities))) 
+mydata = gather(mydata, key = "predictors", value = "predictor.value", -logit)
+
+#plot
+ggplot(mydata, aes(logit, predictor.value))+
+  geom_point(size = 0.5, alpha = 0.5) +
+  geom_smooth(method = "loess") + 
+  theme_bw() + 
+  facet_wrap(~predictors, scales = "free_y")
+```
+
+#Check for Influential variables  
+```{r message=FALSE, warning=FALSE}
+plot(logit.final, which = 4, id.n = 2) #cook's distance
+```
+
+#Check Standardized Residuals  
+Extract model results to compute std. residuals
+```{r message=FALSE, warning=FALSE}
+library(broom) #package containing the augment function needed
+logit.final.data <- augment(logit.final)
+top_n(logit.final.data, 2, .cooksd)
+```
+
+Plot Standardized Residuals  
+```{r message=FALSE, warning=FALSE}
+#add a column to identify rows
+id = rownames(logit.final.data)
+logit.final.data = cbind(id=id, logit.final.data)
+
+ggplot(logit.final.data, aes(id, .std.resid)) + 
+  geom_point(aes(color = y), alpha = .5) +
+  theme_bw()
+```
+
+```{r message=FALSE, warning=FALSE}
+# find data points with an absolute standardized residuals above 3: outliers 
+filter(logit.final.data, abs(.std.resid) > 3) # none exists
+```
+All absolute standardized residuals were below 3, indicating there are no outliers. 
+  
+#Check for Multicollinearity    
+VIFj > 10 means at least 90% of xj is explained by other predictors. Remove until all VIFs are < 10. This is how to handle/treat multicollinearity, which causes predictors to conform to each other and less reliable predictions. 
+```{r message=FALSE, warning=FALSE}
+vif(logit.final)
+```
+
+The final model does not display signs of multicollinearity. All VIFs were reasonable.  
+  
+#ROC Curve and ROC  
+```{r message=FALSE, warning=FALSE}
+#pred and auc were previously calculated and stored as logitpred and logit auc
+
+#calculate statistics
+logit.false.rates = performance(logit.pred, "fpr", "fnr")
+logit.accuracy = performance(logit.pred, "acc", "err")
+logit.perf = performance(logit.pred, "tpr", "fpr")
+
+#plot ROC curve and AUC
+plot(logit.perf, colorize = T, main = "ROC Curve")
+text(.5, .5, paste("AUC:", logit.auc))
+```
+
+#Compute Optimal Threshold
+```{r message=FALSE, warning=FALSE}
+#first calculate sensitivity
+plot(unlist(performance(logit.pred, "sens")@x.values), unlist(performance(logit.pred, "sens")@y.values), 
+     type="l", lwd=2, 
+     ylab="Sensitivity", xlab="Cutoff", main = paste("Maximized Cutoff\n","AUC: ",logit.auc))
+
+par(new=TRUE) # plot another line in same plot
+
+#second specificity
+plot(unlist(performance(logit.pred, "spec")@x.values), unlist(performance(logit.pred, "spec")@y.values), 
+     type="l", lwd=2, col='red', ylab="", xlab="")
+axis(4, at=seq(0,1,0.2)) #specificity axis labels
+mtext("Specificity",side=4, col='red')
+
+#find where the lines intersect
+min.diff <-which.min(abs(unlist(performance(logit.pred, "sens")@y.values) - unlist(performance(logit.pred, "spec")@y.values)))
+min.x<-unlist(performance(logit.pred, "sens")@x.values)[min.diff]
+min.y<-unlist(performance(logit.pred, "spec")@y.values)[min.diff]
+logit.optimal <-min.x #this is the optimal points to best trade off sensitivity and specificity
+
+abline(h = min.y, lty = 3)
+abline(v = min.x, lty = 3)
+text(min.x,0,paste("optimal threshold=",round(logit.optimal,2)), pos = 4)
+```
+
+#Rerun Model with Optimal Threshold
+```{r message=FALSE, warning=FALSE}
+#make new predictions with optimal threshold and evaluate performance metrics
+library(caret)
+logit.test$PredProb = predict.glm(logit.final, newdata=logit.test, type = 'response')
+logit.test$Pred.y = ifelse(logit.test$PredProb >= .08,1,0)
+logit.test$Pred.y = ifelse(logit.test$Pred.y == 1, "yes", "no")
+caret::confusionMatrix(as.factor(logit.test$y), as.factor(logit.test$Pred.y))
+```
+Applying the optimal threshold significantly reduced accuracy from 90.64% to 71.57% and specificity from 68.57% to 23.13%, while boosting sensitivity of the final model from 91.62% to 94.95%. The final model will revert back to final.logit with a .5 threshold.  
+  
+#FULL LDA Model  
+```{r message=FALSE, warning=FALSE}
+library(MASS)
+#switch out different df's featuring different data prep/feature engineering to view & record results
+lda.data = df6#
+lda.train = train6
+lda.test = test6
+set.seed(2021)
+
+#train model
+lda.full = lda(y~., data=lda.train)
+
+#make predictions
+predictions.lda.full = predict(lda.full, newdata=lda.test)
+summary(predictions.lda.full$class)
+
+#confusion matrix 
+caret::confusionMatrix(predictions.lda.full$class, lda.test$y)
+
+#AUC
+#lda.full.pred = prediction(predict(lda.full, lda.test, type = "response"), lda.test$y)
+#lda.full.auc = round(as.numeric(performance(lda.full.pred, measure = "auc")@y.values), 3)
+#lda.full.auc
+```
+ 
+
+#FITTED LDA MODEL  
+Fit an LDA model using the same predictors as the final logistic model  
+```{r message=FALSE, warning=FALSE}
+lda.fit.data = df1
+lda.fit.train = train1
+lda.fit.test = test1
+set.seed(2021)
+
+#train model
+lda.fit = lda(y~emp.var.rate + age + contact + month + poutcome, data=lda.fit.train) #add back contact, month, poutcome
+
+#make predictions
+predictions.lda.fit = predict(lda.fit, newdata=lda.fit.test)
+summary(predictions.lda.fit$class)
+
+#confusion matrix 
+caret::confusionMatrix(predictions.lda.fit$class, lda.fit.test$y)
+
+#AUC
+#lda.fit.pred = prediction(predict(lda.fit, lda.fit.test, type = "response"), lda.fit.test$y)
+#lda.fit.auc = round(as.numeric(performance(lda.fit.pred, measure = "auc")@y.values), 3)
+#lda.fit.auc
+```
+
+
+
+
+
+
+
+
