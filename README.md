@@ -1,1 +1,3 @@
-# marketing-term-deposits
+# marketing-term-deposits  
+
+In this study, a dataset from a large Portuguese bank was analyzed and used to train Logistic Regression and Linear Discriminant Analysis models to predict future response probabilities to target bank customers. The goal was to predict the success of subscribing to a long-term time deposit using attributes that are known about the customer before a call is executed. The fitted logistic regression model that used binning and feature scaling outperformed all other models, with a 90.64% accuracy rate and the odds ratios were interpreted to give bank managers valuable insight into the features that tend to increase the likelihood of subscribing to a term deposit.
